@@ -9,40 +9,18 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/bbvtaev/synthetis/internal/entity"
 )
 
 const Version = "1.0.0-alpha"
-
-type Point struct {
-	Timestamp int64   `json:"ts"`
-	Value     float64 `json:"val"`
-}
-
-type WriteSeries struct {
-	Metric string            `json:"metric"`
-	Labels map[string]string `json:"labels"`
-	Points []Point           `json:"points"`
-}
-
-type SeriesResult struct {
-	Metric string            `json:"metric"`
-	Labels map[string]string `json:"labels"`
-	Points []Point           `json:"points"`
-}
-
-type QueryOptions struct {
-	Metric string
-	Labels map[string]string
-	From   int64
-	To     int64
-}
 
 type seriesID uint64
 
 type series struct {
 	metric string
 	labels map[string]string
-	points []Point
+	points []entity.Point
 }
 
 type DB struct {
@@ -58,7 +36,7 @@ type walRecord struct {
 	Type   string            `json:"type"`
 	Metric string            `json:"metric"`
 	Labels map[string]string `json:"labels"`
-	Points []Point           `json:"points"`
+	Points []entity.Point    `json:"points"`
 }
 
 func Open(path string) (*DB, error) {
@@ -101,7 +79,7 @@ func (db *DB) Close() error {
 	return err
 }
 
-func (db *DB) Write(batch []WriteSeries) error {
+func (db *DB) Write(batch []entity.WriteSeries) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -134,7 +112,7 @@ func (db *DB) Write(batch []WriteSeries) error {
 			ser = &series{
 				metric: s.Metric,
 				labels: cloneLabels(s.Labels),
-				points: make([]Point, 0, len(s.Points)),
+				points: make([]entity.Point, 0, len(s.Points)),
 			}
 			db.series[id] = ser
 		}
@@ -146,7 +124,7 @@ func (db *DB) Write(batch []WriteSeries) error {
 	return nil
 }
 
-func (db *DB) Query(opts QueryOptions) ([]SeriesResult, error) {
+func (db *DB) Query(opts entity.QueryOptions) ([]entity.SeriesResult, error) {
 	if opts.Metric == "" {
 		return nil, errors.New("metric is required")
 	}
@@ -157,7 +135,7 @@ func (db *DB) Query(opts QueryOptions) ([]SeriesResult, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	var res []SeriesResult
+	var res []entity.SeriesResult
 
 	for _, s := range db.series {
 		if s.metric != opts.Metric {
@@ -172,7 +150,7 @@ func (db *DB) Query(opts QueryOptions) ([]SeriesResult, error) {
 			continue
 		}
 
-		res = append(res, SeriesResult{
+		res = append(res, entity.SeriesResult{
 			Metric: s.metric,
 			Labels: cloneLabels(s.labels),
 			Points: points,
@@ -241,7 +219,7 @@ func (db *DB) applyRecord(rec walRecord) {
 		ser = &series{
 			metric: rec.Metric,
 			labels: cloneLabels(rec.Labels),
-			points: make([]Point, 0, len(rec.Points)),
+			points: make([]entity.Point, 0, len(rec.Points)),
 		}
 		db.series[id] = ser
 	}
@@ -284,7 +262,7 @@ func labelsMatch(filter, actual map[string]string) bool {
 	return true
 }
 
-func insertPointSorted(points *[]Point, p Point) {
+func insertPointSorted(points *[]entity.Point, p entity.Point) {
 	ps := *points
 
 	i := sort.Search(len(ps), func(i int) bool {
@@ -296,13 +274,13 @@ func insertPointSorted(points *[]Point, p Point) {
 		return
 	}
 
-	ps = append(ps, Point{})
+	ps = append(ps, entity.Point{})
 	copy(ps[i+1:], ps[i:])
 	ps[i] = p
 	*points = ps
 }
 
-func filterPointsByTime(points []Point, from, to int64) []Point {
+func filterPointsByTime(points []entity.Point, from, to int64) []entity.Point {
 	if len(points) == 0 {
 		return nil
 	}
@@ -322,7 +300,7 @@ func filterPointsByTime(points []Point, from, to int64) []Point {
 		return nil
 	}
 
-	out := make([]Point, end-start)
+	out := make([]entity.Point, end-start)
 	copy(out, points[start:end])
 	return out
 }

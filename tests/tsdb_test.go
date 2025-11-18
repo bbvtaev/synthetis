@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tsdb "github.com/bbvtaev/synthetis"
+	"github.com/bbvtaev/synthetis/internal/entity"
 )
 
 func newTestDB(t *testing.T) *tsdb.DB {
@@ -26,11 +27,11 @@ func newTestDB(t *testing.T) *tsdb.DB {
 func TestWriteAndQuerySingleSeries(t *testing.T) {
 	db := newTestDB(t)
 
-	err := db.Write([]tsdb.WriteSeries{
+	err := db.Write([]entity.WriteSeries{
 		{
 			Metric: "cpu_usage",
 			Labels: map[string]string{"host": "a", "dc": "eu"},
-			Points: []tsdb.Point{
+			Points: []entity.Point{
 				{Timestamp: 1, Value: 0.5},
 				{Timestamp: 2, Value: 0.7},
 				{Timestamp: 3, Value: 0.9},
@@ -41,7 +42,7 @@ func TestWriteAndQuerySingleSeries(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	res, err := db.Query(tsdb.QueryOptions{
+	res, err := db.Query(entity.QueryOptions{
 		Metric: "cpu_usage",
 		Labels: map[string]string{"host": "a"},
 		From:   1,
@@ -82,23 +83,23 @@ func TestWriteAndQuerySingleSeries(t *testing.T) {
 func TestLabelFiltering(t *testing.T) {
 	db := newTestDB(t)
 
-	err := db.Write([]tsdb.WriteSeries{
+	err := db.Write([]entity.WriteSeries{
 		{
 			Metric: "cpu_usage",
 			Labels: map[string]string{"host": "a"},
-			Points: []tsdb.Point{{Timestamp: 1, Value: 0.1}},
+			Points: []entity.Point{{Timestamp: 1, Value: 0.1}},
 		},
 		{
 			Metric: "cpu_usage",
 			Labels: map[string]string{"host": "b"},
-			Points: []tsdb.Point{{Timestamp: 1, Value: 0.2}},
+			Points: []entity.Point{{Timestamp: 1, Value: 0.2}},
 		},
 	})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	resA, err := db.Query(tsdb.QueryOptions{
+	resA, err := db.Query(entity.QueryOptions{
 		Metric: "cpu_usage",
 		Labels: map[string]string{"host": "a"},
 		From:   0,
@@ -114,7 +115,7 @@ func TestLabelFiltering(t *testing.T) {
 		t.Errorf("expected host=a, got %s", resA[0].Labels["host"])
 	}
 
-	resB, err := db.Query(tsdb.QueryOptions{
+	resB, err := db.Query(entity.QueryOptions{
 		Metric: "cpu_usage",
 		Labels: map[string]string{"host": "b"},
 		From:   0,
@@ -130,7 +131,7 @@ func TestLabelFiltering(t *testing.T) {
 		t.Errorf("expected host=b, got %s", resB[0].Labels["host"])
 	}
 
-	resAll, err := db.Query(tsdb.QueryOptions{
+	resAll, err := db.Query(entity.QueryOptions{
 		Metric: "cpu_usage",
 		Labels: nil,
 		From:   0,
@@ -147,11 +148,11 @@ func TestLabelFiltering(t *testing.T) {
 func TestTimeRangeFiltering(t *testing.T) {
 	db := newTestDB(t)
 
-	err := db.Write([]tsdb.WriteSeries{
+	err := db.Write([]entity.WriteSeries{
 		{
 			Metric: "temp",
 			Labels: map[string]string{"sensor": "s1"},
-			Points: []tsdb.Point{
+			Points: []entity.Point{
 				{Timestamp: 10, Value: 1.0},
 				{Timestamp: 20, Value: 2.0},
 				{Timestamp: 30, Value: 3.0},
@@ -162,7 +163,7 @@ func TestTimeRangeFiltering(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	res, err := db.Query(tsdb.QueryOptions{
+	res, err := db.Query(entity.QueryOptions{
 		Metric: "temp",
 		Labels: map[string]string{"sensor": "s1"},
 		From:   15,
@@ -193,11 +194,11 @@ func TestWALReplay(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	err = db.Write([]tsdb.WriteSeries{
+	err = db.Write([]entity.WriteSeries{
 		{
 			Metric: "disk_usage",
 			Labels: map[string]string{"host": "a"},
-			Points: []tsdb.Point{
+			Points: []entity.Point{
 				{Timestamp: 100, Value: 42.0},
 			},
 		},
@@ -216,7 +217,7 @@ func TestWALReplay(t *testing.T) {
 	}
 	defer db2.Close()
 
-	res, err := db2.Query(tsdb.QueryOptions{
+	res, err := db2.Query(entity.QueryOptions{
 		Metric: "disk_usage",
 		Labels: map[string]string{"host": "a"},
 		From:   0,
@@ -240,7 +241,7 @@ func TestWALReplay(t *testing.T) {
 func TestQueryValidationErrors(t *testing.T) {
 	db := newTestDB(t)
 
-	_, err := db.Query(tsdb.QueryOptions{
+	_, err := db.Query(entity.QueryOptions{
 		Metric: "",
 		From:   0,
 		To:     10,
@@ -249,7 +250,7 @@ func TestQueryValidationErrors(t *testing.T) {
 		t.Fatalf("expected error for empty metric, got nil")
 	}
 
-	_, err = db.Query(tsdb.QueryOptions{
+	_, err = db.Query(entity.QueryOptions{
 		Metric: "cpu",
 		From:   10,
 		To:     5,
@@ -265,7 +266,7 @@ func TestWriteEmptyBatch(t *testing.T) {
 	if err := db.Write(nil); err != nil {
 		t.Fatalf("Write(nil) error = %v", err)
 	}
-	if err := db.Write([]tsdb.WriteSeries{}); err != nil {
+	if err := db.Write([]entity.WriteSeries{}); err != nil {
 		t.Fatalf("Write(empty slice) error = %v", err)
 	}
 }
