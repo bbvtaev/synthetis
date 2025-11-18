@@ -1,8 +1,10 @@
 package synthetis_test
 
 import (
+	"math/rand"
 	"path/filepath"
 	"testing"
+	"time"
 
 	tsdb "github.com/bbvtaev/synthetis"
 	"github.com/bbvtaev/synthetis/internal/entity"
@@ -269,4 +271,76 @@ func TestWriteEmptyBatch(t *testing.T) {
 	if err := db.Write([]entity.WriteSeries{}); err != nil {
 		t.Fatalf("Write(empty slice) error = %v", err)
 	}
+}
+func newBenchDB(b *testing.B) *tsdb.DB {
+	b.Helper()
+
+	dir := b.TempDir()
+	path := filepath.Join(dir, "tsdb.wal")
+
+	db, err := tsdb.Open(path)
+	if err != nil {
+		b.Fatalf("Open() error = %v", err)
+	}
+	b.Cleanup(func() {
+		_ = db.Close()
+	})
+	return db
+}
+
+func BenchmarkWriteThroughput(b *testing.B) {
+	db := newBenchDB(b)
+
+	const pointsPerWrite = 8
+
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	_ = db.Write([]entity.WriteSeries{
+		{
+			Metric: "warmup",
+			Labels: map[string]string{"sensor": "init"},
+			Points: []entity.Point{
+				{Timestamp: time.Now().Unix(), Value: 0.0},
+			},
+		},
+	})
+
+	b.ResetTimer()
+	start := time.Now()
+	totalPoints := 0
+
+	for i := 0; i < b.N; i++ {
+		tsBase := time.Now().Unix()
+
+		points := make([]entity.Point, 0, pointsPerWrite)
+		for j := 0; j < pointsPerWrite; j++ {
+			points = append(points, entity.Point{
+				Timestamp: tsBase + int64(j),
+				Value:     rnd.Float64() * 100,
+			})
+		}
+
+		err := db.Write([]entity.WriteSeries{
+			{
+				Metric: "load",
+				Labels: map[string]string{"sensor": "A1"},
+				Points: points,
+			},
+		})
+		if err != nil {
+			b.Fatalf("Write error: %v", err)
+		}
+
+		totalPoints += pointsPerWrite
+	}
+
+	elapsed := time.Since(start)
+	opsPerSec := float64(b.N) / elapsed.Seconds()
+	pointsPerSec := float64(totalPoints) / elapsed.Seconds()
+
+	b.ReportMetric(opsPerSec, "ops/s")
+	b.ReportMetric(pointsPerSec, "points/s")
+
+	b.Logf("pointsPerWrite=%d, totalOps=%d, totalPoints=%d, elapsed=%s",
+		pointsPerWrite, b.N, totalPoints, elapsed)
 }
