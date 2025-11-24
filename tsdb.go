@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/bbvtaev/synthetis/internal/entity"
 )
 
-const Version = "1.0.0-alpha"
+const Version = "1.1.0-alpha"
 
 type seriesID uint64
 
@@ -23,13 +24,23 @@ type series struct {
 	points []entity.Point
 }
 
-type DB struct {
+const numShards = 128
+
+type seriesShard struct {
 	mu     sync.RWMutex
 	series map[seriesID]*series
+}
 
-	walMu sync.Mutex
-	wal   *os.File
-	path  string
+type DB struct {
+	shards [numShards]seriesShard
+
+	walMu  sync.Mutex
+	wal    *os.File
+	walBuf *bufio.Writer
+	path   string
+
+	walCh   chan walRecord
+	walDone chan struct{}
 }
 
 type walRecord struct {
@@ -54,9 +65,15 @@ func Open(path string) (*DB, error) {
 	}
 
 	db := &DB{
-		series: make(map[seriesID]*series),
-		wal:    f,
-		path:   path,
+		wal:     f,
+		walBuf:  bufio.NewWriterSize(f, 1<<20), // 1 MiB
+		path:    path,
+		walCh:   make(chan walRecord, 4096),
+		walDone: make(chan struct{}),
+	}
+
+	for i := range db.shards {
+		db.shards[i].series = make(map[seriesID]*series)
 	}
 
 	if err := db.replayWAL(); err != nil {
@@ -64,18 +81,39 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 
+	go db.walLoop()
+
 	return db, nil
+}
+
+func (db *DB) shardFor(id seriesID) *seriesShard {
+	return &db.shards[uint64(id)%numShards]
 }
 
 func (db *DB) Close() error {
 	db.walMu.Lock()
+	if db.walCh != nil {
+		close(db.walCh)
+	}
+	db.walMu.Unlock()
+
+	if db.walDone != nil {
+		<-db.walDone
+	}
+
+	db.walMu.Lock()
 	defer db.walMu.Unlock()
 
+	if db.walBuf != nil {
+		_ = db.walBuf.Flush()
+	}
 	if db.wal == nil {
 		return nil
 	}
+
 	err := db.wal.Close()
 	db.wal = nil
+	db.walBuf = nil
 	return err
 }
 
@@ -88,37 +126,38 @@ func (db *DB) Write(batch []entity.WriteSeries) error {
 		if len(s.Points) == 0 {
 			continue
 		}
+
+		labelsCopy := cloneLabels(s.Labels)
+
+		pointsCopy := make([]entity.Point, len(s.Points))
+		copy(pointsCopy, s.Points)
+
 		rec := walRecord{
 			Type:   "write",
 			Metric: s.Metric,
-			Labels: s.Labels,
-			Points: s.Points,
+			Labels: labelsCopy,
+			Points: pointsCopy,
 		}
-		if err := db.appendWAL(rec); err != nil {
-			return err
-		}
-	}
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+		db.walCh <- rec
 
-	for _, s := range batch {
-		if len(s.Points) == 0 {
-			continue
-		}
-		id := hashSeries(s.Metric, s.Labels)
-		ser, ok := db.series[id]
+		id := hashSeries(s.Metric, labelsCopy)
+		sh := db.shardFor(id)
+
+		sh.mu.Lock()
+		ser, ok := sh.series[id]
 		if !ok {
 			ser = &series{
 				metric: s.Metric,
-				labels: cloneLabels(s.Labels),
+				labels: labelsCopy,
 				points: make([]entity.Point, 0, len(s.Points)),
 			}
-			db.series[id] = ser
+			sh.series[id] = ser
 		}
 		for _, p := range s.Points {
 			insertPointSorted(&ser.points, p)
 		}
+		sh.mu.Unlock()
 	}
 
 	return nil
@@ -132,55 +171,83 @@ func (db *DB) Query(opts entity.QueryOptions) ([]entity.SeriesResult, error) {
 		return nil, errors.New("from > to")
 	}
 
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
 	var res []entity.SeriesResult
 
-	for _, s := range db.series {
-		if s.metric != opts.Metric {
-			continue
-		}
-		if !labelsMatch(opts.Labels, s.labels) {
-			continue
-		}
+	for i := range db.shards {
+		sh := &db.shards[i]
+		sh.mu.RLock()
+		for _, s := range sh.series {
+			if s.metric != opts.Metric {
+				continue
+			}
+			if !labelsMatch(opts.Labels, s.labels) {
+				continue
+			}
 
-		points := filterPointsByTime(s.points, opts.From, opts.To)
-		if len(points) == 0 {
-			continue
-		}
+			points := filterPointsByTime(s.points, opts.From, opts.To)
+			if len(points) == 0 {
+				continue
+			}
 
-		res = append(res, entity.SeriesResult{
-			Metric: s.metric,
-			Labels: cloneLabels(s.labels),
-			Points: points,
-		})
+			res = append(res, entity.SeriesResult{
+				Metric: s.metric,
+				Labels: cloneLabels(s.labels),
+				Points: points,
+			})
+		}
+		sh.mu.RUnlock()
 	}
 
 	return res, nil
 }
 
-func (db *DB) appendWAL(rec walRecord) error {
+func (db *DB) walLoop() {
+	defer close(db.walDone)
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case rec, ok := <-db.walCh:
+			if !ok {
+				db.flushWAL()
+				return
+			}
+			db.writeWALRecord(rec)
+		case <-ticker.C:
+			db.flushWAL()
+		}
+	}
+}
+
+func (db *DB) writeWALRecord(rec walRecord) {
 	db.walMu.Lock()
 	defer db.walMu.Unlock()
 
-	if db.wal == nil {
-		return errors.New("wal is closed")
+	if db.wal == nil || db.walBuf == nil {
+		return
 	}
 
 	b, err := json.Marshal(rec)
 	if err != nil {
-		return err
+		return
 	}
 
-	if _, err := db.wal.Write(b); err != nil {
-		return err
-	}
-	if _, err := db.wal.Write([]byte("\n")); err != nil {
-		return err
-	}
+	_, _ = db.walBuf.Write(b)
+	_ = db.walBuf.WriteByte('\n')
+}
 
-	return db.wal.Sync()
+func (db *DB) flushWAL() {
+	db.walMu.Lock()
+	defer db.walMu.Unlock()
+
+	if db.walBuf != nil {
+		_ = db.walBuf.Flush()
+	}
+	if db.wal != nil {
+		_ = db.wal.Sync()
+	}
 }
 
 func (db *DB) replayWAL() error {
@@ -210,18 +277,19 @@ func (db *DB) replayWAL() error {
 
 func (db *DB) applyRecord(rec walRecord) {
 	id := hashSeries(rec.Metric, rec.Labels)
+	sh := db.shardFor(id)
 
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
-	ser, ok := db.series[id]
+	ser, ok := sh.series[id]
 	if !ok {
 		ser = &series{
 			metric: rec.Metric,
 			labels: cloneLabels(rec.Labels),
 			points: make([]entity.Point, 0, len(rec.Points)),
 		}
-		db.series[id] = ser
+		sh.series[id] = ser
 	}
 
 	for _, p := range rec.Points {
@@ -264,12 +332,18 @@ func labelsMatch(filter, actual map[string]string) bool {
 
 func insertPointSorted(points *[]entity.Point, p entity.Point) {
 	ps := *points
+	n := len(ps)
 
-	i := sort.Search(len(ps), func(i int) bool {
+	if n == 0 || ps[n-1].Timestamp <= p.Timestamp {
+		*points = append(ps, p)
+		return
+	}
+
+	i := sort.Search(n, func(i int) bool {
 		return ps[i].Timestamp >= p.Timestamp
 	})
 
-	if i == len(ps) {
+	if i == n {
 		*points = append(ps, p)
 		return
 	}
