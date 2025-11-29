@@ -272,6 +272,7 @@ func TestWriteEmptyBatch(t *testing.T) {
 		t.Fatalf("Write(empty slice) error = %v", err)
 	}
 }
+
 func newBenchDB(b *testing.B) *tsdb.DB {
 	b.Helper()
 

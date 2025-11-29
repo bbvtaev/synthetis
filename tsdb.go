@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -50,16 +51,31 @@ type walRecord struct {
 	Points []entity.Point    `json:"points"`
 }
 
-func Open(path string) (*DB, error) {
-	if path == "" {
-		return nil, errors.New("empty path")
+func Open(path ...string) (*DB, error) {
+
+	// Saving to HOME/sythetis/ if path is empty
+
+	if len(path) > 1 {
+		return nil, fmt.Errorf("more then 1 path string is not allowed")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	var pt string
+	if len(path) == 0 {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			panic(err)
+		}
+
+		pt = filepath.Join(home, "synthetis", "metrics.wal")
+	} else {
+		pt = path[0]
+	}
+
+	if err := os.MkdirAll(filepath.Dir(pt), 0o755); err != nil {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(pt, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +83,7 @@ func Open(path string) (*DB, error) {
 	db := &DB{
 		wal:     f,
 		walBuf:  bufio.NewWriterSize(f, 1<<20), // 1 MiB
-		path:    path,
+		path:    pt,
 		walCh:   make(chan walRecord, 4096),
 		walDone: make(chan struct{}),
 	}
@@ -117,9 +133,14 @@ func (db *DB) Close() error {
 	return err
 }
 
-func (db *DB) Write(batch []entity.WriteSeries) error {
-	if len(batch) == 0 {
-		return nil
+func (db *DB) Write(metric string, labels map[string]string, value interface{}) error {
+	batch := []entity.WriteSeries{{
+		Metric: metric,
+		Labels: labels,
+		Points: []entity.Point{
+			{Timestamp: time.Now().UnixNano(), Value: value},
+		},
+	},
 	}
 
 	for _, s := range batch {
