@@ -189,11 +189,11 @@ func (db *DB) Write(metric string, labels map[string]string, value ...interface{
 	return nil
 }
 
-func (db *DB) Query(opts entity.QueryOptions) ([]entity.SeriesResult, error) {
-	if opts.Metric == "" {
+func (db *DB) Query(metric string, labels map[string]string, from int64, to int64) ([]entity.SeriesResult, error) {
+	if metric == "" {
 		return nil, errors.New("metric is required")
 	}
-	if opts.From > opts.To {
+	if from > to {
 		return nil, errors.New("from > to")
 	}
 
@@ -203,14 +203,14 @@ func (db *DB) Query(opts entity.QueryOptions) ([]entity.SeriesResult, error) {
 		sh := &db.shards[i]
 		sh.mu.RLock()
 		for _, s := range sh.series {
-			if s.metric != opts.Metric {
+			if s.metric != metric {
 				continue
 			}
-			if !labelsMatch(opts.Labels, s.labels) {
+			if !labelsMatch(labels, s.labels) {
 				continue
 			}
 
-			points := filterPointsByTime(s.points, opts.From, opts.To)
+			points := filterPointsByTime(s.points, from, to)
 			if len(points) == 0 {
 				continue
 			}
@@ -383,6 +383,10 @@ func insertPointSorted(points *[]entity.Point, p entity.Point) {
 func filterPointsByTime(points []entity.Point, from, to int64) []entity.Point {
 	if len(points) == 0 {
 		return nil
+	}
+
+	if from == 0 && to == 0 {
+		return points
 	}
 
 	start := sort.Search(len(points), func(i int) bool {
