@@ -1,8 +1,8 @@
 package entity
 
 type Point struct {
-	Timestamp int64       `json:"ts"`
-	Value     interface{} `json:"val"`
+	Timestamp int64       `json:"timestamp"`
+	Value     interface{} `json:"value"`
 }
 
 type WriteSeries struct {

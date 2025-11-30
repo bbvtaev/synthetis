@@ -3,10 +3,11 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"sync"
 	"time"
 
 	synthetis "github.com/bbvtaev/synthetis"
-	"github.com/bbvtaev/synthetis/internal/entity"
 )
 
 // In main func we have nothing to initialize,
@@ -17,30 +18,53 @@ import (
 func main() {
 	start := time.Now()
 
-	db, err := synthetis.Open("./data/mtx.wal")
+	sth, err := synthetis.Open("./data/mtx.wal")
 	if err != nil {
 		slog.Info("Error occured", "err", err)
 		return
 	}
-	defer db.Close()
+	defer sth.Close()
 
-	for i := 0; i < 100000; i++ {
-		if err = db.Write("some_mtx", map[string]string{"host": "a"}, i); err != nil {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	ticker := time.NewTicker(1 * time.Millisecond)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := sth.Write("each_millisecond_metric",
+					map[string]string{"user": "pooser"},
+					rand.Intn(34),
+				); err != nil {
+					slog.Info("Error occured", "err", err)
+					return
+				}
+			}
+		}
+	}()
+
+	for i := 0; i < 10000; i++ {
+		if err := sth.Write("some_mtx",
+			map[string]string{"host": "a"},
+			i, 52, rand.Intn(52),
+		); err != nil {
 			slog.Info("Error occured", "err", err)
+			close(done)
+			wg.Wait()
 			return
 		}
 	}
 
-	res, err := db.Query(entity.QueryOptions{
-		Metric: "some_mtx",
-		Labels: map[string]string{"host": "a"},
-		From:   1,
-		To:     2,
-	})
-	if err != nil {
-		slog.Info("Error occured", "err", err)
-		return
-	}
+	close(done)
+	wg.Wait()
 
-	fmt.Println(res, time.Since(start))
+	fmt.Println(time.Since(start))
 }

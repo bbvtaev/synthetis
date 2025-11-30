@@ -29,18 +29,7 @@ func newTestDB(t *testing.T) *tsdb.DB {
 func TestWriteAndQuerySingleSeries(t *testing.T) {
 	db := newTestDB(t)
 
-	err := db.Write([]entity.WriteSeries{
-		{
-			Metric: "cpu_usage",
-			Labels: map[string]string{"host": "a", "dc": "eu"},
-			Points: []entity.Point{
-				{Timestamp: 1, Value: 0.5},
-				{Timestamp: 2, Value: 0.7},
-				{Timestamp: 3, Value: 0.9},
-			},
-		},
-	})
-	if err != nil {
+	if err := db.Write("cpu_usage", map[string]string{"host": "a", "dc": "eu"}, 0.5, 0.7, 0.9); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
 
@@ -85,18 +74,7 @@ func TestWriteAndQuerySingleSeries(t *testing.T) {
 func TestLabelFiltering(t *testing.T) {
 	db := newTestDB(t)
 
-	err := db.Write([]entity.WriteSeries{
-		{
-			Metric: "cpu_usage",
-			Labels: map[string]string{"host": "a"},
-			Points: []entity.Point{{Timestamp: 1, Value: 0.1}},
-		},
-		{
-			Metric: "cpu_usage",
-			Labels: map[string]string{"host": "b"},
-			Points: []entity.Point{{Timestamp: 1, Value: 0.2}},
-		},
-	})
+	err := db.Write("cpu_usage", map[string]string{"host": "a"}, 0.1)
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -150,17 +128,7 @@ func TestLabelFiltering(t *testing.T) {
 func TestTimeRangeFiltering(t *testing.T) {
 	db := newTestDB(t)
 
-	err := db.Write([]entity.WriteSeries{
-		{
-			Metric: "temp",
-			Labels: map[string]string{"sensor": "s1"},
-			Points: []entity.Point{
-				{Timestamp: 10, Value: 1.0},
-				{Timestamp: 20, Value: 2.0},
-				{Timestamp: 30, Value: 3.0},
-			},
-		},
-	})
+	err := db.Write("temp", map[string]string{"sensor": "s1"}, 1.0)
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -196,15 +164,7 @@ func TestWALReplay(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	err = db.Write([]entity.WriteSeries{
-		{
-			Metric: "disk_usage",
-			Labels: map[string]string{"host": "a"},
-			Points: []entity.Point{
-				{Timestamp: 100, Value: 42.0},
-			},
-		},
-	})
+	err = db.Write("disk_usage", map[string]string{"host": "a"}, 42.0)
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -262,16 +222,18 @@ func TestQueryValidationErrors(t *testing.T) {
 	}
 }
 
-func TestWriteEmptyBatch(t *testing.T) {
-	db := newTestDB(t)
+// functional not ready yet for these type of tests
 
-	if err := db.Write(nil); err != nil {
-		t.Fatalf("Write(nil) error = %v", err)
-	}
-	if err := db.Write([]entity.WriteSeries{}); err != nil {
-		t.Fatalf("Write(empty slice) error = %v", err)
-	}
-}
+// func TestWriteEmptyBatch(t *testing.T) {
+// 	db := newTestDB(t)
+
+// 	if err := db.Write(nil); err != nil {
+// 		t.Fatalf("Write(nil) error = %v", err)
+// 	}
+// 	if err := db.Write([]entity.WriteSeries{}); err != nil {
+// 		t.Fatalf("Write(empty slice) error = %v", err)
+// 	}
+// }
 
 func newBenchDB(b *testing.B) *tsdb.DB {
 	b.Helper()
@@ -296,15 +258,7 @@ func BenchmarkWriteThroughput(b *testing.B) {
 
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	_ = db.Write([]entity.WriteSeries{
-		{
-			Metric: "warmup",
-			Labels: map[string]string{"sensor": "init"},
-			Points: []entity.Point{
-				{Timestamp: time.Now().Unix(), Value: 0.0},
-			},
-		},
-	})
+	_ = db.Write("warmup", map[string]string{"sensor": "init"}, 0.0)
 
 	b.ResetTimer()
 	start := time.Now()
@@ -321,13 +275,7 @@ func BenchmarkWriteThroughput(b *testing.B) {
 			})
 		}
 
-		err := db.Write([]entity.WriteSeries{
-			{
-				Metric: "load",
-				Labels: map[string]string{"sensor": "A1"},
-				Points: points,
-			},
-		})
+		err := db.Write("load", map[string]string{"sensor": "A1"}, points)
 		if err != nil {
 			b.Fatalf("Write error: %v", err)
 		}

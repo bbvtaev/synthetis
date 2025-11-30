@@ -133,53 +133,58 @@ func (db *DB) Close() error {
 	return err
 }
 
-func (db *DB) Write(metric string, labels map[string]string, value interface{}) error {
-	batch := []entity.WriteSeries{{
+func (db *DB) Write(metric string, labels map[string]string, value ...interface{}) error {
+	points := make([]entity.Point, len(value))
+
+	ts := time.Now().UnixNano()
+	for i, v := range value {
+		points[i] = entity.Point{
+			Timestamp: ts,
+			Value:     v,
+		}
+	}
+
+	batch := entity.WriteSeries{
 		Metric: metric,
 		Labels: labels,
-		Points: []entity.Point{
-			{Timestamp: time.Now().UnixNano(), Value: value},
-		},
-	},
+		Points: points,
 	}
 
-	for _, s := range batch {
-		if len(s.Points) == 0 {
-			continue
-		}
-
-		labelsCopy := cloneLabels(s.Labels)
-
-		pointsCopy := make([]entity.Point, len(s.Points))
-		copy(pointsCopy, s.Points)
-
-		rec := walRecord{
-			Type:   "write",
-			Metric: s.Metric,
-			Labels: labelsCopy,
-			Points: pointsCopy,
-		}
-
-		db.walCh <- rec
-
-		id := hashSeries(s.Metric, labelsCopy)
-		sh := db.shardFor(id)
-
-		sh.mu.Lock()
-		ser, ok := sh.series[id]
-		if !ok {
-			ser = &series{
-				metric: s.Metric,
-				labels: labelsCopy,
-				points: make([]entity.Point, 0, len(s.Points)),
-			}
-			sh.series[id] = ser
-		}
-		for _, p := range s.Points {
-			insertPointSorted(&ser.points, p)
-		}
-		sh.mu.Unlock()
+	if len(batch.Points) == 0 {
+		return fmt.Errorf("points must be more than zero")
 	}
+
+	labelsCopy := cloneLabels(batch.Labels)
+
+	pointsCopy := make([]entity.Point, len(batch.Points))
+	copy(pointsCopy, batch.Points)
+
+	rec := walRecord{
+		Type:   "write",
+		Metric: batch.Metric,
+		Labels: labelsCopy,
+		Points: pointsCopy,
+	}
+
+	db.walCh <- rec
+
+	id := hashSeries(batch.Metric, labelsCopy)
+	sh := db.shardFor(id)
+
+	sh.mu.Lock()
+	ser, ok := sh.series[id]
+	if !ok {
+		ser = &series{
+			metric: batch.Metric,
+			labels: labelsCopy,
+			points: make([]entity.Point, 0, len(batch.Points)),
+		}
+		sh.series[id] = ser
+	}
+	for _, p := range batch.Points {
+		insertPointSorted(&ser.points, p)
+	}
+	sh.mu.Unlock()
 
 	return nil
 }
