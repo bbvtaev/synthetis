@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -50,16 +51,31 @@ type walRecord struct {
 	Points []entity.Point    `json:"points"`
 }
 
-func Open(path string) (*DB, error) {
-	if path == "" {
-		return nil, errors.New("empty path")
+func Open(path ...string) (*DB, error) {
+
+	// Saving to HOME/sythetis/ if path is empty
+
+	if len(path) > 1 {
+		return nil, fmt.Errorf("more then 1 path string is not allowed")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	var pt string
+	if len(path) == 0 {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			panic(err)
+		}
+
+		pt = filepath.Join(home, "synthetis", "metrics.wal")
+	} else {
+		pt = path[0]
+	}
+
+	if err := os.MkdirAll(filepath.Dir(pt), 0o755); err != nil {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(pt, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +83,7 @@ func Open(path string) (*DB, error) {
 	db := &DB{
 		wal:     f,
 		walBuf:  bufio.NewWriterSize(f, 1<<20), // 1 MiB
-		path:    path,
+		path:    pt,
 		walCh:   make(chan walRecord, 4096),
 		walDone: make(chan struct{}),
 	}
@@ -117,57 +133,67 @@ func (db *DB) Close() error {
 	return err
 }
 
-func (db *DB) Write(batch []entity.WriteSeries) error {
-	if len(batch) == 0 {
-		return nil
+func (db *DB) Write(metric string, labels map[string]string, value ...interface{}) error {
+	points := make([]entity.Point, len(value))
+
+	ts := time.Now().UnixNano()
+	for i, v := range value {
+		points[i] = entity.Point{
+			Timestamp: ts,
+			Value:     v,
+		}
 	}
 
-	for _, s := range batch {
-		if len(s.Points) == 0 {
-			continue
-		}
-
-		labelsCopy := cloneLabels(s.Labels)
-
-		pointsCopy := make([]entity.Point, len(s.Points))
-		copy(pointsCopy, s.Points)
-
-		rec := walRecord{
-			Type:   "write",
-			Metric: s.Metric,
-			Labels: labelsCopy,
-			Points: pointsCopy,
-		}
-
-		db.walCh <- rec
-
-		id := hashSeries(s.Metric, labelsCopy)
-		sh := db.shardFor(id)
-
-		sh.mu.Lock()
-		ser, ok := sh.series[id]
-		if !ok {
-			ser = &series{
-				metric: s.Metric,
-				labels: labelsCopy,
-				points: make([]entity.Point, 0, len(s.Points)),
-			}
-			sh.series[id] = ser
-		}
-		for _, p := range s.Points {
-			insertPointSorted(&ser.points, p)
-		}
-		sh.mu.Unlock()
+	batch := entity.WriteSeries{
+		Metric: metric,
+		Labels: labels,
+		Points: points,
 	}
+
+	if len(batch.Points) == 0 {
+		return fmt.Errorf("points must be more than zero")
+	}
+
+	labelsCopy := cloneLabels(batch.Labels)
+
+	pointsCopy := make([]entity.Point, len(batch.Points))
+	copy(pointsCopy, batch.Points)
+
+	rec := walRecord{
+		Type:   "write",
+		Metric: batch.Metric,
+		Labels: labelsCopy,
+		Points: pointsCopy,
+	}
+
+	db.walCh <- rec
+
+	id := hashSeries(batch.Metric, labelsCopy)
+	sh := db.shardFor(id)
+
+	sh.mu.Lock()
+	ser, ok := sh.series[id]
+	if !ok {
+		ser = &series{
+			metric: batch.Metric,
+			labels: labelsCopy,
+			points: make([]entity.Point, 0, len(batch.Points)),
+		}
+		sh.series[id] = ser
+	}
+	for _, p := range batch.Points {
+		insertPointSorted(&ser.points, p)
+	}
+	sh.mu.Unlock()
 
 	return nil
 }
 
-func (db *DB) Query(opts entity.QueryOptions) ([]entity.SeriesResult, error) {
-	if opts.Metric == "" {
+func (db *DB) Query(metric string, labels map[string]string, from int64, to int64) ([]entity.SeriesResult, error) {
+	if metric == "" {
 		return nil, errors.New("metric is required")
 	}
-	if opts.From > opts.To {
+	if from > to {
 		return nil, errors.New("from > to")
 	}
 
@@ -177,14 +203,14 @@ func (db *DB) Query(opts entity.QueryOptions) ([]entity.SeriesResult, error) {
 		sh := &db.shards[i]
 		sh.mu.RLock()
 		for _, s := range sh.series {
-			if s.metric != opts.Metric {
+			if s.metric != metric {
 				continue
 			}
-			if !labelsMatch(opts.Labels, s.labels) {
+			if !labelsMatch(labels, s.labels) {
 				continue
 			}
 
-			points := filterPointsByTime(s.points, opts.From, opts.To)
+			points := filterPointsByTime(s.points, from, to)
 			if len(points) == 0 {
 				continue
 			}
@@ -357,6 +383,10 @@ func insertPointSorted(points *[]entity.Point, p entity.Point) {
 func filterPointsByTime(points []entity.Point, from, to int64) []entity.Point {
 	if len(points) == 0 {
 		return nil
+	}
+
+	if from == 0 && to == 0 {
+		return points
 	}
 
 	start := sort.Search(len(points), func(i int) bool {
