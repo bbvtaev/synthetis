@@ -11,18 +11,40 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/bbvtaev/synthetis/internal/entity"
 )
 
 const Version = "1.1.0-alpha"
+
+type Point struct {
+	Timestamp int64       `json:"timestamp"`
+	Value     interface{} `json:"value"`
+}
+
+type WriteSeries struct {
+	Metric string            `json:"metric"`
+	Labels map[string]string `json:"labels"`
+	Points []Point           `json:"points"`
+}
+
+type SeriesResult struct {
+	Metric string            `json:"metric"`
+	Labels map[string]string `json:"labels"`
+	Points []Point           `json:"points"`
+}
+
+type QueryOptions struct {
+	Metric string
+	Labels map[string]string
+	From   int64
+	To     int64
+}
 
 type seriesID uint64
 
 type series struct {
 	metric string
 	labels map[string]string
-	points []entity.Point
+	points []Point
 }
 
 const numShards = 128
@@ -48,7 +70,7 @@ type walRecord struct {
 	Type   string            `json:"type"`
 	Metric string            `json:"metric"`
 	Labels map[string]string `json:"labels"`
-	Points []entity.Point    `json:"points"`
+	Points []Point           `json:"points"`
 }
 
 func Open(path ...string) (*DB, error) {
@@ -134,17 +156,17 @@ func (db *DB) Close() error {
 }
 
 func (db *DB) Write(metric string, labels map[string]string, value ...interface{}) error {
-	points := make([]entity.Point, len(value))
+	points := make([]Point, len(value))
 
 	ts := time.Now().UnixNano()
 	for i, v := range value {
-		points[i] = entity.Point{
+		points[i] = Point{
 			Timestamp: ts,
 			Value:     v,
 		}
 	}
 
-	batch := entity.WriteSeries{
+	batch := WriteSeries{
 		Metric: metric,
 		Labels: labels,
 		Points: points,
@@ -156,7 +178,7 @@ func (db *DB) Write(metric string, labels map[string]string, value ...interface{
 
 	labelsCopy := cloneLabels(batch.Labels)
 
-	pointsCopy := make([]entity.Point, len(batch.Points))
+	pointsCopy := make([]Point, len(batch.Points))
 	copy(pointsCopy, batch.Points)
 
 	rec := walRecord{
@@ -177,7 +199,7 @@ func (db *DB) Write(metric string, labels map[string]string, value ...interface{
 		ser = &series{
 			metric: batch.Metric,
 			labels: labelsCopy,
-			points: make([]entity.Point, 0, len(batch.Points)),
+			points: make([]Point, 0, len(batch.Points)),
 		}
 		sh.series[id] = ser
 	}
@@ -189,15 +211,12 @@ func (db *DB) Write(metric string, labels map[string]string, value ...interface{
 	return nil
 }
 
-func (db *DB) Query(metric string, labels map[string]string, from int64, to int64) ([]entity.SeriesResult, error) {
+func (db *DB) Query(metric string, labels map[string]string, time int) ([]SeriesResult, error) {
 	if metric == "" {
 		return nil, errors.New("metric is required")
 	}
-	if from > to {
-		return nil, errors.New("from > to")
-	}
 
-	var res []entity.SeriesResult
+	var res []SeriesResult
 
 	for i := range db.shards {
 		sh := &db.shards[i]
@@ -210,12 +229,12 @@ func (db *DB) Query(metric string, labels map[string]string, from int64, to int6
 				continue
 			}
 
-			points := filterPointsByTime(s.points, from, to)
+			points := filterPointsByTime(s.points, time)
 			if len(points) == 0 {
 				continue
 			}
 
-			res = append(res, entity.SeriesResult{
+			res = append(res, SeriesResult{
 				Metric: s.metric,
 				Labels: cloneLabels(s.labels),
 				Points: points,
@@ -313,7 +332,7 @@ func (db *DB) applyRecord(rec walRecord) {
 		ser = &series{
 			metric: rec.Metric,
 			labels: cloneLabels(rec.Labels),
-			points: make([]entity.Point, 0, len(rec.Points)),
+			points: make([]Point, 0, len(rec.Points)),
 		}
 		sh.series[id] = ser
 	}
@@ -356,7 +375,7 @@ func labelsMatch(filter, actual map[string]string) bool {
 	return true
 }
 
-func insertPointSorted(points *[]entity.Point, p entity.Point) {
+func insertPointSorted(points *[]Point, p Point) {
 	ps := *points
 	n := len(ps)
 
@@ -374,38 +393,32 @@ func insertPointSorted(points *[]entity.Point, p entity.Point) {
 		return
 	}
 
-	ps = append(ps, entity.Point{})
+	ps = append(ps, Point{})
 	copy(ps[i+1:], ps[i:])
 	ps[i] = p
 	*points = ps
 }
 
-func filterPointsByTime(points []entity.Point, from, to int64) []entity.Point {
+func filterPointsByTime(points []Point, time_before int) []Point {
 	if len(points) == 0 {
 		return nil
 	}
 
-	if from == 0 && to == 0 {
+	if time_before == 0 {
 		return points
 	}
 
+	cutoff := time.Now().Add(-time.Duration(time_before) * time.Minute).UnixNano()
+
 	start := sort.Search(len(points), func(i int) bool {
-		return points[i].Timestamp >= from
+		return points[i].Timestamp >= cutoff
 	})
 	if start == len(points) {
 		return nil
 	}
 
-	end := start
-	for end < len(points) && points[end].Timestamp <= to {
-		end++
-	}
-	if end <= start {
-		return nil
-	}
-
-	out := make([]entity.Point, end-start)
-	copy(out, points[start:end])
+	out := make([]Point, len(points)-start)
+	copy(out, points[start:])
 	return out
 }
 

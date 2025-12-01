@@ -63,12 +63,10 @@ func main() {
 		}
 	}
 
-	time.Sleep(2 * time.Second)
-
 	close(done)
 	wg.Wait()
 
-	res, err := sth.Query("each_millisecond_metric", map[string]string{"user": "pooser"}, 0, 0)
+	res, err := sth.Query("each_millisecond_metric", map[string]string{"user": "pooser"}, 1)
 	if err != nil {
 		slog.Info("Error occured", "err", err)
 		return
