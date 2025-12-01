@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tsdb "github.com/bbvtaev/synthetis"
-	"github.com/bbvtaev/synthetis/internal/entity"
 )
 
 func newTestDB(t *testing.T) *tsdb.DB {
@@ -33,7 +32,7 @@ func TestWriteAndQuerySingleSeries(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	res, err := db.Query("cpu_usage", map[string]string{"host": "a"}, 0, 0)
+	res, err := db.Query("cpu_usage", map[string]string{"host": "a"}, 0)
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}
@@ -68,7 +67,7 @@ func TestLabelFiltering(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	resA, err := db.Query("cpu_usage", map[string]string{"host": "ab"}, 0, 0)
+	resA, err := db.Query("cpu_usage", map[string]string{"host": "ab"}, 0)
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}
@@ -79,7 +78,7 @@ func TestLabelFiltering(t *testing.T) {
 		t.Errorf("expected host=ab, got %s", resA[0].Labels["host"])
 	}
 
-	resB, err := db.Query("cpu_usage", map[string]string{"host": "bs"}, 0, 0)
+	resB, err := db.Query("cpu_usage", map[string]string{"host": "bs"}, 0)
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}
@@ -90,7 +89,7 @@ func TestLabelFiltering(t *testing.T) {
 		t.Errorf("expected host=bs, got %s", resB[0].Labels["host"])
 	}
 
-	resAll, err := db.Query("cpu_usage", nil, 0, 0)
+	resAll, err := db.Query("cpu_usage", nil, 0)
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}
@@ -107,7 +106,7 @@ func TestTimeRangeFiltering(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 
-	res, err := db.Query("temp", map[string]string{"sensor": "s1"}, 0, 0)
+	res, err := db.Query("temp", map[string]string{"sensor": "s1"}, 0)
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}
@@ -145,7 +144,7 @@ func TestWALReplay(t *testing.T) {
 	}
 	defer db2.Close()
 
-	res, err := db2.Query("disk_usage", map[string]string{"host": "a"}, 0, 0)
+	res, err := db2.Query("disk_usage", map[string]string{"host": "a"}, 0)
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}
@@ -161,14 +160,9 @@ func TestWALReplay(t *testing.T) {
 func TestQueryValidationErrors(t *testing.T) {
 	db := newTestDB(t)
 
-	_, err := db.Query("", nil, 0, 10)
+	_, err := db.Query("", nil, 0)
 	if err == nil {
 		t.Fatalf("expected error for empty metric, got nil")
-	}
-
-	_, err = db.Query("cpu", nil, 10, 5)
-	if err == nil {
-		t.Fatalf("expected error for from > to, got nil")
 	}
 }
 
@@ -217,9 +211,9 @@ func BenchmarkWriteThroughput(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tsBase := time.Now().Unix()
 
-		points := make([]entity.Point, 0, pointsPerWrite)
+		points := make([]tsdb.Point, 0, pointsPerWrite)
 		for j := 0; j < pointsPerWrite; j++ {
-			points = append(points, entity.Point{
+			points = append(points, tsdb.Point{
 				Timestamp: tsBase + int64(j),
 				Value:     rnd.Float64() * 100,
 			})
